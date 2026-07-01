@@ -52,4 +52,8 @@ A `vercel.json` is included with a daily cron entry for the overdue-reminder end
 
 ## License
 
-No license has been chosen yet for this project.
+MIT - see [LICENSE](./LICENSE).
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, migration conventions, and PR requirements.

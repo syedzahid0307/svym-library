@@ -8,6 +8,20 @@ import { eq } from "drizzle-orm";
 export const { handlers, signIn, signOut, auth } = NextAuth({
   session: {
     strategy: "jwt",
+    // NextAuth defaults to a 30-day session with no re-validation against
+    // the database in between. Account status (PENDING/APPROVED/
+    // REJECTED) and role are only checked once, at sign-in - if an admin
+    // later rejects a previously-approved member or changes their role,
+    // that person's existing browser session keeps working exactly as
+    // before for up to 30 days, since nothing re-checks status on
+    // subsequent requests.
+    //
+    // 24 hours doesn't close that gap - it shrinks it. A full fix needs
+    // a revocation mechanism (e.g. a tokenVersion column checked on
+    // every request) that invalidates existing sessions immediately when
+    // status changes; that's a larger change, deferred for now. This is
+    // the cheap, immediate mitigation.
+    maxAge: 24 * 60 * 60,
   },
   providers: [
     CredentialsProvider({

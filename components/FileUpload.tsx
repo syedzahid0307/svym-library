@@ -1,6 +1,11 @@
 "use client";
 
 import { IKImage, ImageKitProvider, IKUpload, IKVideo } from "imagekitio-next";
+import type {
+  IKUploadResponse,
+  UploadError,
+  AbortableFileInput,
+} from "imagekitio-next/dist/types/components/IKUpload/props";
 import config from "@/lib/config";
 import { useRef, useState } from "react";
 import Image from "next/image";
@@ -15,7 +20,12 @@ const {
 
 const authenticator = async () => {
   try {
-    const response = await fetch(`${config.env.apiEndpoint}/api/auth/imagekit`);
+    // Was previously pointed at /api/auth/imagekit, which doesn't exist
+    // as a route anywhere in this app - the real credential-issuing
+    // endpoint lives at /api/imagekit (see app/api/imagekit/route.ts).
+    // That meant every upload attempt would 404 here before ever
+    // reaching ImageKit.
+    const response = await fetch(`${config.env.apiEndpoint}/api/imagekit`);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -30,8 +40,9 @@ const authenticator = async () => {
     const { signature, expire, token } = data;
 
     return { token, expire, signature };
-  } catch (error: any) {
-    throw new Error(`Authentication request failed: ${error.message}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    throw new Error(`Authentication request failed: ${message}`);
   }
 };
 
@@ -54,7 +65,7 @@ const FileUpload = ({
   onFileChange,
   value,
 }: Props) => {
-  const ikUploadRef = useRef(null);
+  const ikUploadRef = useRef<AbortableFileInput>(null);
   const [file, setFile] = useState<{ filePath: string | null }>({
     filePath: value ?? null,
   });
@@ -69,7 +80,7 @@ const FileUpload = ({
     text: variant === "dark" ? "text-light-100" : "text-dark-400",
   };
 
-  const onError = (error: any) => {
+  const onError = (error: UploadError) => {
     console.log(error);
 
     toast({
@@ -79,7 +90,7 @@ const FileUpload = ({
     });
   };
 
-  const onSuccess = (res: any) => {
+  const onSuccess = (res: IKUploadResponse) => {
     setFile(res);
     onFileChange(res.filePath);
 
@@ -143,8 +154,7 @@ const FileUpload = ({
           e.preventDefault();
 
           if (ikUploadRef.current) {
-            // @ts-ignore
-            ikUploadRef.current?.click();
+            ikUploadRef.current.click();
           }
         }}
       >

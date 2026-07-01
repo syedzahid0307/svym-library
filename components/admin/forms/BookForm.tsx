@@ -22,48 +22,54 @@ import FileUpload from "@/components/FileUpload";
 import ColorPicker from "@/components/admin/ColorPicker";
 import ISBNLookup from "@/components/admin/ISBNLookup";
 import BookQRCode from "@/components/admin/BookQRCode";
-import { createBook } from "@/lib/admin/actions/book";
+import { createBook, updateBook } from "@/lib/admin/actions/book";
 import { toast } from "@/hooks/use-toast";
 
 interface Props extends Partial<Book> {
   type?: "create" | "update";
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const BookForm = ({ type, ...book }: Props) => {
+const BookForm = ({ type = "create", ...book }: Props) => {
   const router = useRouter();
-  // Once a book is successfully created we stop showing the form and show
-  // a "print the barcode now?" step instead, using the libraryBarcode the
-  // server generated for it.
+  const isUpdate = type === "update" && !!book.id;
+
+  // Once a *new* book is successfully created we stop showing the form
+  // and show a "print the barcode now?" step instead, using the
+  // libraryBarcode the server generated for it. Editing an existing book
+  // doesn't go through this step - its barcode already exists and isn't
+  // regenerated on update.
   const [createdBook, setCreatedBook] = useState<Book | null>(null);
 
   const form = useForm<z.infer<typeof bookSchema>>({
     resolver: zodResolver(bookSchema),
     defaultValues: {
-      title: "",
-      description: "",
-      author: "",
-      genre: "",
-      rating: 1,
-      totalCopies: 1,
-      coverUrl: "",
-      coverColor: "",
-      videoUrl: "",
-      summary: "",
-      isbn: "",
+      title: book.title ?? "",
+      description: book.description ?? "",
+      author: book.author ?? "",
+      genre: book.genre ?? "",
+      rating: book.rating ?? 1,
+      totalCopies: book.totalCopies ?? 1,
+      coverUrl: book.coverUrl ?? "",
+      coverColor: book.coverColor ?? "",
+      videoUrl: book.videoUrl ?? "",
+      summary: book.summary ?? "",
+      isbn: book.isbn ?? "",
     },
   });
 
   const onSubmit = async (values: z.infer<typeof bookSchema>) => {
-    const result = await createBook(values);
+    const result = isUpdate
+      ? await updateBook(book.id as string, values)
+      : await createBook(values);
 
     if (result.success) {
-      toast({
-        title: "Success",
-        description: "Book created successfully",
-      });
-
-      setCreatedBook(result.data as Book);
+      if (isUpdate) {
+        toast({ title: "Success", description: "Book updated successfully" });
+        router.push("/admin/books");
+      } else {
+        toast({ title: "Success", description: "Book created successfully" });
+        setCreatedBook(result.data as Book);
+      }
     } else {
       toast({
         title: "Error",
@@ -73,9 +79,9 @@ const BookForm = ({ type, ...book }: Props) => {
     }
   };
 
-  // Shown right after a book is saved: ask whether to print its barcode
-  // sticker now (most common case) or skip and do it later from the
-  // book's detail page.
+  // Shown right after a *new* book is saved: ask whether to print its
+  // barcode sticker now (most common case) or skip and do it later from
+  // the book's detail page.
   if (createdBook) {
     return (
       <div className="flex flex-col items-center gap-6 rounded-xl border border-gray-100 bg-white p-8">
@@ -109,15 +115,17 @@ const BookForm = ({ type, ...book }: Props) => {
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
-        <ISBNLookup
-          onResolved={({ title, author, genre, coverUrl, isbn }) => {
-            if (title) form.setValue("title", title);
-            if (author) form.setValue("author", author);
-            if (genre) form.setValue("genre", genre);
-            if (coverUrl) form.setValue("coverUrl", coverUrl);
-            form.setValue("isbn", isbn);
-          }}
-        />
+        {!isUpdate && (
+          <ISBNLookup
+            onResolved={({ title, author, genre, coverUrl, isbn }) => {
+              if (title) form.setValue("title", title);
+              if (author) form.setValue("author", author);
+              if (genre) form.setValue("genre", genre);
+              if (coverUrl) form.setValue("coverUrl", coverUrl);
+              form.setValue("isbn", isbn);
+            }}
+          />
+        )}
         <FormField
           control={form.control}
           name={"title"}
@@ -192,6 +200,7 @@ const BookForm = ({ type, ...book }: Props) => {
                   type="number"
                   min={1}
                   max={5}
+                  step={1}
                   placeholder="Book rating"
                   {...field}
                   className="book-form_input"
@@ -220,6 +229,13 @@ const BookForm = ({ type, ...book }: Props) => {
                   className="book-form_input"
                 />
               </FormControl>
+              {isUpdate && (
+                <p className="text-xs text-light-500">
+                  Currently {book.availableCopies} of {book.totalCopies} copies
+                  available. Changing this recalculates availability while
+                  preserving how many are currently checked out.
+                </p>
+              )}
               <FormMessage />
             </FormItem>
           )}
@@ -334,7 +350,7 @@ const BookForm = ({ type, ...book }: Props) => {
         />
 
         <Button type="submit" className="book-form_btn text-white">
-          Add Book to Library
+          {isUpdate ? "Save Changes" : "Add Book to Library"}
         </Button>
       </form>
     </Form>

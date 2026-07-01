@@ -5,6 +5,7 @@ import { and, eq, lt } from "drizzle-orm";
 import { sendEmail } from "@/lib/workflow";
 import config from "@/lib/config";
 import dayjs from "dayjs";
+import { libraryToday } from "@/lib/date";
 
 // GET /api/cron/overdue-reminders
 //
@@ -32,7 +33,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const today = dayjs().format("YYYY-MM-DD");
+  const today = libraryToday();
 
   const overdueLoans = await db
     .select({

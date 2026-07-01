@@ -2,8 +2,18 @@
 
 import { db } from "@/database/drizzle";
 import { books, borrowRecords, users } from "@/database/schema";
-import { and, eq } from "drizzle-orm";
-import dayjs from "dayjs";
+import { and, eq, sql } from "drizzle-orm";
+import { libraryDueDate } from "@/lib/date";
+
+// Postgres error code 23505 = unique_violation. The neon-http driver
+// surfaces this on the thrown error's `code` property - checked
+// defensively since the exact shape isn't part of any documented public
+// type, just the observed behavior of the underlying pg wire protocol.
+const isUniqueViolation = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  (error as { code?: string }).code === "23505";
 
 export const getBorrowedBooksForUser = async (userId: string) => {
   const records = await db
@@ -44,37 +54,64 @@ export const borrowBook = async (params: BorrowBookParams) => {
   const { userId, bookId } = params;
 
   try {
-    const book = await db
-      .select({ availableCopies: books.availableCopies })
-      .from(books)
-      .where(eq(books.id, bookId))
-      .limit(1);
+    const dueDate = libraryDueDate(7);
 
-    if (!book.length || book[0].availableCopies <= 0) {
+    // Atomic, conditional decrement first - the WHERE clause re-checks
+    // availability at the moment of the write rather than trusting a
+    // value read moments earlier, so two concurrent borrows can't both
+    // succeed against the last remaining copy.
+    //
+    // Note: the neon-http driver used here doesn't support true
+    // multi-statement transactions, so this decrement and the insert
+    // below aren't atomic *together* - a crash between them is possible.
+    // Ordering matters for which failure mode that leaves: doing the
+    // decrement first means a crash mid-operation undercounts
+    // availableCopies (safe - just means a copy looks unavailable when
+    // it technically isn't yet), rather than risking the same copy being
+    // lent to two people. See EF-23 in the engineering report for the
+    // longer-term fix (a driver that supports real transactions).
+    const decremented = await db
+      .update(books)
+      .set({ availableCopies: sql`${books.availableCopies} - 1` })
+      .where(and(eq(books.id, bookId), sql`${books.availableCopies} > 0`))
+      .returning({ id: books.id });
+
+    if (!decremented.length) {
       return {
         success: false,
         error: "Book is not available for borrowing",
       };
     }
 
-    const dueDate = dayjs().add(7, "day").toDate().toDateString();
+    // If this user already has an active loan of this exact book, the
+    // partial unique index on (user_id, book_id) WHERE status =
+    // 'BORROWED' rejects the insert - caught below - and we roll back
+    // the decrement above so the copy isn't left marked unavailable for
+    // a borrow that didn't actually happen.
+    try {
+      const record = await db
+        .insert(borrowRecords)
+        .values({ userId, bookId, dueDate, status: "BORROWED" })
+        .returning();
 
-    const record = await db.insert(borrowRecords).values({
-      userId,
-      bookId,
-      dueDate,
-      status: "BORROWED",
-    });
+      return {
+        success: true,
+        data: JSON.parse(JSON.stringify(record[0])),
+      };
+    } catch (insertError) {
+      await db
+        .update(books)
+        .set({ availableCopies: sql`${books.availableCopies} + 1` })
+        .where(eq(books.id, bookId));
 
-    await db
-      .update(books)
-      .set({ availableCopies: book[0].availableCopies - 1 })
-      .where(eq(books.id, bookId));
-
-    return {
-      success: true,
-      data: JSON.parse(JSON.stringify(record)),
-    };
+      if (isUniqueViolation(insertError)) {
+        return {
+          success: false,
+          error: "You already have this book borrowed",
+        };
+      }
+      throw insertError;
+    }
   } catch (error) {
     console.log(error);
 

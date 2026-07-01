@@ -2,7 +2,7 @@
 
 import { db } from "@/database/drizzle";
 import { users } from "@/database/schema";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/admin/guard";
 
@@ -79,9 +79,15 @@ export const rejectUser = async (userId: string) => {
   }
 
   try {
+    // Bumping tokenVersion here is what makes this rejection actually
+    // take effect against a session the user might already be holding -
+    // without it, someone rejected after already being approved and
+    // signed in would keep full access until their session's maxAge
+    // naturally expires (up to 24h - see auth.ts). See auth.ts's jwt
+    // callback for the check on the other end of this.
     await db
       .update(users)
-      .set({ status: "REJECTED" })
+      .set({ status: "REJECTED", tokenVersion: sql`${users.tokenVersion} + 1` })
       .where(eq(users.id, userId));
 
     revalidatePath("/admin/account-requests");
@@ -113,7 +119,15 @@ export const updateUserRole = async (
   }
 
   try {
-    await db.update(users).set({ role }).where(eq(users.id, userId));
+    // Same reasoning as rejectUser above: bumping tokenVersion forces
+    // any session this user already holds to re-validate against their
+    // new role on their next request past the TTL window, rather than
+    // continuing to act with their old (possibly more privileged) role
+    // until the session naturally expires.
+    await db
+      .update(users)
+      .set({ role, tokenVersion: sql`${users.tokenVersion} + 1` })
+      .where(eq(users.id, userId));
 
     revalidatePath("/admin/users");
 

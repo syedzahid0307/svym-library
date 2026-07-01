@@ -5,22 +5,22 @@ import { db } from "@/database/drizzle";
 import { users } from "@/database/schema";
 import { eq } from "drizzle-orm";
 
+// How long a session's tokenVersion is trusted before re-checking it
+// against the database. Lower = revocation takes effect faster, but
+// costs a DB round trip on the first request after the window expires
+// for every active user, not just ones who were actually revoked.
+// 5 minutes is a reasonable middle ground for a library-sized user base.
+const TOKEN_VALIDATION_TTL_MS = 5 * 60 * 1000;
+
 export const { handlers, signIn, signOut, auth } = NextAuth({
   session: {
     strategy: "jwt",
-    // NextAuth defaults to a 30-day session with no re-validation against
-    // the database in between. Account status (PENDING/APPROVED/
-    // REJECTED) and role are only checked once, at sign-in - if an admin
-    // later rejects a previously-approved member or changes their role,
-    // that person's existing browser session keeps working exactly as
-    // before for up to 30 days, since nothing re-checks status on
-    // subsequent requests.
-    //
-    // 24 hours doesn't close that gap - it shrinks it. A full fix needs
-    // a revocation mechanism (e.g. a tokenVersion column checked on
-    // every request) that invalidates existing sessions immediately when
-    // status changes; that's a larger change, deferred for now. This is
-    // the cheap, immediate mitigation.
+    // NextAuth defaults to a 30-day session. 24 hours here is the outer
+    // bound on how long a session can live even if the tokenVersion
+    // check below is somehow never triggered (e.g. TOKEN_VALIDATION_TTL_MS
+    // logic has a bug) - the two mechanisms are complementary, not
+    // redundant: this is a hard ceiling, tokenVersion is the fast path
+    // for actually revoking someone sooner than that ceiling.
     maxAge: 24 * 60 * 60,
   },
   providers: [
@@ -56,7 +56,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           id: user[0].id.toString(),
           email: user[0].email,
           name: user[0].fullName,
-        } as User;
+          tokenVersion: user[0].tokenVersion,
+        } as User & { tokenVersion: number };
       },
     }),
   ],
@@ -65,16 +66,63 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   },
   callbacks: {
     async jwt({ token, user }) {
+      // Sign-in: user is only present on the initial call right after
+      // authorize() succeeds. Stamp the token with the tokenVersion that
+      // was current at that moment and record when it was last checked.
       if (user) {
-        token.id = user.id;
-        token.name = user.name;
+        token.id = user.id as string;
+        token.name = user.name as string;
+        token.tokenVersion = (user as { tokenVersion: number }).tokenVersion;
+        token.lastValidatedAt = Date.now();
+        return token;
       }
 
+      // Every other call (i.e. every request using an existing session):
+      // only hit the database if the TTL has actually expired, so most
+      // requests skip this entirely and just reuse the token as-is.
+      const isStale =
+        !token.lastValidatedAt ||
+        Date.now() - token.lastValidatedAt > TOKEN_VALIDATION_TTL_MS;
+
+      if (!isStale) {
+        return token;
+      }
+
+      const current = await db
+        .select({
+          tokenVersion: users.tokenVersion,
+          status: users.status,
+        })
+        .from(users)
+        .where(eq(users.id, token.id))
+        .limit(1);
+
+      // Account no longer exists, was rejected, or an admin bumped
+      // tokenVersion (via rejectUser/updateUserRole in
+      // lib/admin/actions/user.ts) since this token was issued or last
+      // checked - force re-authentication rather than silently letting a
+      // stale session continue.
+      //
+      // NOTE: throwing here to invalidate the session is the documented
+      // NextAuth pattern for this, but hasn't been exercised against a
+      // live deployment as part of this change - verify end-to-end
+      // (reject a signed-in test user, confirm their next request past
+      // the TTL window actually gets logged out) before relying on this
+      // in production.
+      if (
+        !current.length ||
+        current[0].status !== "APPROVED" ||
+        current[0].tokenVersion !== token.tokenVersion
+      ) {
+        throw new Error("Session revoked");
+      }
+
+      token.lastValidatedAt = Date.now();
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
-        session.user.id = token.id as string;
+        session.user.id = token.id;
         session.user.name = token.name as string;
       }
 

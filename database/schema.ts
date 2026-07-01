@@ -33,6 +33,15 @@ export const users = pgTable("users", {
   memberType: varchar("member_type", { length: 50 }).notNull().default("COMMUNITY"),
   status: STATUS_ENUM("status").default("PENDING"),
   role: ROLE_ENUM("role").default("USER"),
+  // Incremented whenever an admin rejects this account or changes its
+  // role (see lib/admin/actions/user.ts). The JWT issued at sign-in
+  // embeds the value current at that moment; auth.ts periodically
+  // re-checks it against the database and forces re-authentication if
+  // they no longer match. Without this, a rejected/demoted user's
+  // existing session keeps working exactly as before until it naturally
+  // expires (see auth.ts's session.maxAge) - this is what makes revoking
+  // access actually take effect sooner than that.
+  tokenVersion: integer("token_version").notNull().default(0),
   lastActivityDate: date("last_activity_date").defaultNow(),
   createdAt: timestamp("created_at", {
     withTimezone: true,

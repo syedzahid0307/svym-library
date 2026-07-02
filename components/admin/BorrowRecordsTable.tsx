@@ -95,11 +95,11 @@ const BorrowRecordsTable = ({
     startTransition(async () => {
       const result = await renewBorrow(recordId);
 
-      if (result.success && result.dueDate) {
+      if (result.success) {
         setList((prev) =>
           prev.map((r) =>
             r.id === recordId
-              ? { ...r, dueDate: result.dueDate as string, isOverdue: false }
+              ? { ...r, dueDate: result.dueDate, isOverdue: false }
               : r,
           ),
         );

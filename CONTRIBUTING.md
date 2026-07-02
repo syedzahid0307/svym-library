@@ -22,6 +22,21 @@ npx tsc --noEmit
 npm run build
 ```
 
+## Testing
+
+```bash
+npm test          # runs once
+npm run test:watch
+```
+
+Most tests are pure unit tests with no external dependencies (e.g. `lib/date.test.ts`). Concurrency-critical logic (the atomic borrow/duplicate-loan guarantees in `lib/domain/borrowing.ts`) has real integration tests in `lib/domain/borrowing.integration.test.ts` - these are **not mocked**, since a mock can only prove the code calls the methods you expect, not that Postgres's actual locking/constraint behavior holds under real concurrent load. They're skipped by default and only run with:
+
+```bash
+RUN_INTEGRATION_TESTS=1 DATABASE_URL=<a disposable test database> npx vitest run
+```
+
+Never point this at a production database - it inserts and deletes real rows.
+
 ## Database changes
 
 This project uses hand-reviewed SQL migrations under `migrations/`, not blind `drizzle-kit generate` output - schema changes should be reasoned about deliberately, especially anything adding a constraint (unique index, CHECK, foreign key) that existing data could already violate.

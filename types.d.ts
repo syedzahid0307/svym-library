@@ -13,6 +13,7 @@ interface Book {
   summary: string;
   isbn?: string | null;
   libraryBarcode: string;
+  archivedAt?: Date | string | null;
   createdAt: Date | null;
   // Set when this Book is being rendered inside a "my borrowed books"
   // list (see my-profile/page.tsx) rather than the general catalog -
@@ -58,6 +59,7 @@ interface AdminUser {
   status: "PENDING" | "APPROVED" | "REJECTED" | null;
   role: "USER" | "STAFF" | "ADMIN" | null;
   lastActivityDate?: string | null;
+  archivedAt?: Date | string | null;
   createdAt: Date | string | null;
 }
 

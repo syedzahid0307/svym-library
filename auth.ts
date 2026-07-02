@@ -52,6 +52,13 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         // buttons would just be cosmetic.
         if (user[0].status !== "APPROVED") return null;
 
+        // Archived members (see archiveUser in lib/admin/actions/user.ts)
+        // shouldn't be able to sign in either, even though their status
+        // column might still say APPROVED - archivedAt is a separate
+        // lifecycle flag for "no longer an active member" that isn't
+        // meant to require re-litigating their approval status.
+        if (user[0].archivedAt) return null;
+
         return {
           id: user[0].id.toString(),
           email: user[0].email,
@@ -92,13 +99,14 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         .select({
           tokenVersion: users.tokenVersion,
           status: users.status,
+          archivedAt: users.archivedAt,
         })
         .from(users)
         .where(eq(users.id, token.id))
         .limit(1);
 
-      // Account no longer exists, was rejected, or an admin bumped
-      // tokenVersion (via rejectUser/updateUserRole in
+      // Account no longer exists, was rejected or archived, or an admin
+      // bumped tokenVersion (via rejectUser/updateUserRole/archiveUser in
       // lib/admin/actions/user.ts) since this token was issued or last
       // checked - force re-authentication rather than silently letting a
       // stale session continue.
@@ -112,6 +120,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       if (
         !current.length ||
         current[0].status !== "APPROVED" ||
+        current[0].archivedAt ||
         current[0].tokenVersion !== token.tokenVersion
       ) {
         throw new Error("Session revoked");

@@ -1,9 +1,14 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { updateUserRole, updateMemberType } from "@/lib/admin/actions/user";
+import {
+  updateUserRole,
+  updateMemberType,
+  archiveUser,
+} from "@/lib/admin/actions/user";
 import { toast } from "@/hooks/use-toast";
 import { userRoles } from "@/constants";
+import { Button } from "@/components/ui/button";
 
 const statusStyles: Record<string, string> = {
   APPROVED: "bg-green-100 text-green-800",
@@ -18,7 +23,8 @@ const selectClass =
 
 const UsersTable = ({ users }: { users: AdminUser[] }) => {
   const [list, setList] = useState(users);
-  const [, startTransition] = useTransition();
+  const [isPending, startTransition] = useTransition();
+  const [actingOn, setActingOn] = useState<string | null>(null);
 
   const handleRoleChange = (id: string, role: "USER" | "STAFF" | "ADMIN") => {
     setList((prev) => prev.map((u) => (u.id === id ? { ...u, role } : u)));
@@ -52,6 +58,30 @@ const UsersTable = ({ users }: { users: AdminUser[] }) => {
     });
   };
 
+  const handleArchive = (id: string, fullName: string) => {
+    const confirmed = window.confirm(
+      `Archive ${fullName}? They won't be able to sign in, but their borrow history is preserved. This can be undone.`,
+    );
+    if (!confirmed) return;
+
+    setActingOn(id);
+    startTransition(async () => {
+      const result = await archiveUser(id);
+
+      if (result.success) {
+        setList((prev) => prev.filter((u) => u.id !== id));
+        toast({ title: "Member archived" });
+      } else {
+        toast({
+          title: "Couldn't archive this member",
+          description: result.error,
+          variant: "destructive",
+        });
+      }
+      setActingOn(null);
+    });
+  };
+
   return (
     <div className="mt-7 w-full overflow-x-auto">
       <table className="w-full text-left text-sm">
@@ -63,6 +93,7 @@ const UsersTable = ({ users }: { users: AdminUser[] }) => {
             <th className="py-3 pr-4 font-medium">Status</th>
             <th className="py-3 pr-4 font-medium">Member type</th>
             <th className="py-3 pr-4 font-medium">Role</th>
+            <th className="py-3 pr-4 font-medium">Action</th>
           </tr>
         </thead>
         <tbody>
@@ -114,6 +145,16 @@ const UsersTable = ({ users }: { users: AdminUser[] }) => {
                     </option>
                   ))}
                 </select>
+              </td>
+              <td className="py-3 pr-4">
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={isPending && actingOn === user.id}
+                  onClick={() => handleArchive(user.id, user.fullName)}
+                >
+                  Archive
+                </Button>
               </td>
             </tr>
           ))}

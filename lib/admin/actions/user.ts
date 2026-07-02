@@ -2,15 +2,20 @@
 
 import { db } from "@/database/drizzle";
 import { users } from "@/database/schema";
-import { desc, eq, sql } from "drizzle-orm";
+import { desc, eq, isNull, isNotNull, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/admin/guard";
+import { logAuditEvent } from "@/lib/admin/audit";
 
 export const getAllUsers = async () => {
   if (!(await requireAdmin())) {
     return [];
   }
 
+  // Archived members (see archiveUser below) are excluded from the
+  // default active-member listing - their account still exists and
+  // their borrow history is intact, but they're no longer someone an
+  // admin needs to see in the day-to-day member list.
   const result = await db
     .select({
       id: users.id,
@@ -24,7 +29,32 @@ export const getAllUsers = async () => {
       createdAt: users.createdAt,
     })
     .from(users)
+    .where(isNull(users.archivedAt))
     .orderBy(desc(users.createdAt));
+
+  return JSON.parse(JSON.stringify(result));
+};
+
+export const getArchivedUsers = async () => {
+  if (!(await requireAdmin())) {
+    return [];
+  }
+
+  const result = await db
+    .select({
+      id: users.id,
+      fullName: users.fullName,
+      email: users.email,
+      staffId: users.staffId,
+      memberType: users.memberType,
+      status: users.status,
+      role: users.role,
+      archivedAt: users.archivedAt,
+      createdAt: users.createdAt,
+    })
+    .from(users)
+    .where(isNotNull(users.archivedAt))
+    .orderBy(desc(users.archivedAt));
 
   return JSON.parse(JSON.stringify(result));
 };
@@ -53,7 +83,8 @@ export const getPendingUsers = async () => {
 };
 
 export const approveUser = async (userId: string) => {
-  if (!(await requireAdmin())) {
+  const adminId = await requireAdmin();
+  if (!adminId) {
     return { success: false, error: "Not authorized" };
   }
 
@@ -62,6 +93,13 @@ export const approveUser = async (userId: string) => {
       .update(users)
       .set({ status: "APPROVED" })
       .where(eq(users.id, userId));
+
+    await logAuditEvent({
+      actorId: adminId,
+      action: "user.approved",
+      entityType: "user",
+      entityId: userId,
+    });
 
     revalidatePath("/admin/account-requests");
     revalidatePath("/admin/users");
@@ -74,7 +112,8 @@ export const approveUser = async (userId: string) => {
 };
 
 export const rejectUser = async (userId: string) => {
-  if (!(await requireAdmin())) {
+  const adminId = await requireAdmin();
+  if (!adminId) {
     return { success: false, error: "Not authorized" };
   }
 
@@ -89,6 +128,13 @@ export const rejectUser = async (userId: string) => {
       .update(users)
       .set({ status: "REJECTED", tokenVersion: sql`${users.tokenVersion} + 1` })
       .where(eq(users.id, userId));
+
+    await logAuditEvent({
+      actorId: adminId,
+      action: "user.rejected",
+      entityType: "user",
+      entityId: userId,
+    });
 
     revalidatePath("/admin/account-requests");
     revalidatePath("/admin/users");
@@ -129,6 +175,14 @@ export const updateUserRole = async (
       .set({ role, tokenVersion: sql`${users.tokenVersion} + 1` })
       .where(eq(users.id, userId));
 
+    await logAuditEvent({
+      actorId: adminId,
+      action: "user.role_changed",
+      entityType: "user",
+      entityId: userId,
+      metadata: { newRole: role },
+    });
+
     revalidatePath("/admin/users");
 
     return { success: true };
@@ -142,12 +196,21 @@ export const updateMemberType = async (
   userId: string,
   memberType: string,
 ) => {
-  if (!(await requireAdmin())) {
+  const adminId = await requireAdmin();
+  if (!adminId) {
     return { success: false, error: "Not authorized" };
   }
 
   try {
     await db.update(users).set({ memberType }).where(eq(users.id, userId));
+
+    await logAuditEvent({
+      actorId: adminId,
+      action: "user.member_type_changed",
+      entityType: "user",
+      entityId: userId,
+      metadata: { newMemberType: memberType },
+    });
 
     revalidatePath("/admin/users");
 
@@ -155,5 +218,81 @@ export const updateMemberType = async (
   } catch (error) {
     console.log(error);
     return { success: false, error: "Could not update this member's type" };
+  }
+};
+
+export const archiveUser = async (userId: string) => {
+  const adminId = await requireAdmin();
+  if (!adminId) {
+    return { success: false, error: "Not authorized" };
+  }
+
+  if (userId === adminId) {
+    return { success: false, error: "You can't archive your own account" };
+  }
+
+  try {
+    // Archiving (rather than deleting) preserves this member's borrow
+    // history - who had what, when - while removing them from active
+    // member lists. Bumping tokenVersion forces out any session they
+    // currently hold, same mechanism as rejectUser/updateUserRole above.
+    const archived = await db
+      .update(users)
+      .set({ archivedAt: new Date(), tokenVersion: sql`${users.tokenVersion} + 1` })
+      .where(eq(users.id, userId))
+      .returning({ id: users.id, fullName: users.fullName });
+
+    if (!archived.length) {
+      return { success: false, error: "Member not found" };
+    }
+
+    await logAuditEvent({
+      actorId: adminId,
+      action: "user.archived",
+      entityType: "user",
+      entityId: userId,
+      metadata: { fullName: archived[0].fullName },
+    });
+
+    revalidatePath("/admin/users");
+
+    return { success: true };
+  } catch (error) {
+    console.log(error);
+    return { success: false, error: "Could not archive this member" };
+  }
+};
+
+export const restoreUser = async (userId: string) => {
+  const adminId = await requireAdmin();
+  if (!adminId) {
+    return { success: false, error: "Not authorized" };
+  }
+
+  try {
+    const restored = await db
+      .update(users)
+      .set({ archivedAt: null })
+      .where(eq(users.id, userId))
+      .returning({ id: users.id, fullName: users.fullName });
+
+    if (!restored.length) {
+      return { success: false, error: "Member not found" };
+    }
+
+    await logAuditEvent({
+      actorId: adminId,
+      action: "user.restored",
+      entityType: "user",
+      entityId: userId,
+      metadata: { fullName: restored[0].fullName },
+    });
+
+    revalidatePath("/admin/users");
+
+    return { success: true };
+  } catch (error) {
+    console.log(error);
+    return { success: false, error: "Could not restore this member" };
   }
 };

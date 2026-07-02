@@ -19,7 +19,7 @@ const BooksTable = ({ books }: { books: Book[] }) => {
     // everything else here. Deferred for now to keep this pass focused
     // on making delete actually function at all.
     const confirmed = window.confirm(
-      `Delete "${title}"? This can't be undone, and only works if the book has no borrow history.`,
+      `Remove "${title}" from the catalog? If it has borrow history it will be archived (recoverable) instead of permanently deleted.`,
     );
     if (!confirmed) return;
 
@@ -29,10 +29,13 @@ const BooksTable = ({ books }: { books: Book[] }) => {
 
       if (result.success) {
         setList((prev) => prev.filter((b) => b.id !== id));
-        toast({ title: "Book deleted" });
+        toast({
+          title: result.archived ? "Book archived" : "Book deleted",
+          description: result.message,
+        });
       } else {
         toast({
-          title: "Couldn't delete this book",
+          title: "Couldn't remove this book",
           description: result.message,
           variant: "destructive",
         });
@@ -103,7 +106,7 @@ const BooksTable = ({ books }: { books: Book[] }) => {
                     disabled={isPending && actingOn === book.id}
                     onClick={() => handleDelete(book.id, book.title)}
                   >
-                    Delete
+                    Remove
                   </Button>
                 </div>
               </td>
